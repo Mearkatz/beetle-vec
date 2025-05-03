@@ -100,6 +100,50 @@ where
 
 impl<T, G> Vec<T, G>
 where
+    G: GrowthFactor,
+    T: Clone,
+{
+    /**
+    Resizes the `Vec` in-place so that `len` is equal to `new_len`.
+
+    If `new_len` is greater than `len`, the `Vec` is extended by the difference, with each additional slot filled with value. If `new_len` is less than `len`, the `Vec` is simply truncated.
+
+    This method requires `T` to implement `Clone`, in order to be able to clone the passed value. If you need more flexibility (or want to rely on `Default` instead of `Clone`), use `Vec::resize_with`. If you only need to resize to a smaller size, use `Vec::truncate`.
+    */
+    pub fn resize(&mut self, new_len: usize, value: T) {
+        match new_len.cmp(&self.len) {
+            std::cmp::Ordering::Less => self.truncate(new_len),
+            std::cmp::Ordering::Greater => {
+                // extend by difference with `value` in the new slots.
+                self.extend(std::iter::repeat_n(value, self.len() - new_len));
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+}
+
+impl<T, G> Vec<T, G>
+where
+    G: GrowthFactor,
+{
+    /**
+    Shortens the vector, keeping the first len elements and dropping the rest.
+
+    If len is greater or equal to the vector’s current length, this has no effect.
+
+    The drain method can emulate truncate, but causes the excess elements to be returned instead of dropped.
+
+    Note that this method has no effect on the allocated capacity of the vector.
+    */
+    pub fn truncate(&mut self, len: usize) {
+        for e in self.items.iter_mut().skip(len) {
+            *e = MaybeUninit::uninit();
+        }
+    }
+}
+
+impl<T, G> Vec<T, G>
+where
     T: Clone,
     G: GrowthFactor,
 {
