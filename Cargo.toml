@@ -1,9 +1,9 @@
 [package]
-name = "beetle-vec"
+name = "vec"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors = [
-    "Mearkatz <drquinsey@gmail.com>",
+  "Mearkatz <drquinsey@gmail.com>",
 ]
 description = "An implementation of std::vec::Vec"
 
@@ -13,7 +13,7 @@ enum_glob_use = { level = "deny", priority = -2 }
 pedantic = { level = "deny", priority = -3 }
 nursery = { level = "deny", priority = -4 }
 unwrap_used = { level = "deny", priority = -5 }
-# expect_used = { level = "deny", priority = -6 }
+expect_used = { level = "deny", priority = -6 }
 
 [dependencies]
 

@@ -1,31 +1,71 @@
-use std::{fmt::Debug, iter::repeat_with, mem::MaybeUninit, ptr};
+use std::{
+    fmt::Debug, iter::repeat_with, marker::PhantomData, mem::MaybeUninit, num::NonZeroUsize, ptr,
+};
 
-#[derive(Default)]
-pub struct Vec<T> {
-    /// Contents of the vector.
+use growth_factors::Two;
+
+pub mod growth_factors;
+
+pub trait GrowthFactor {
+    /// Calculates a new capacity for a dynamic array like a Vec based on the old capacity
+    #[must_use]
+    fn new_capacity(old_capacity: usize) -> usize {
+        NonZeroUsize::new(old_capacity)
+            .map_or_else(Self::new_capacity_if_old_capacity_eq_zero, |n| {
+                Self::new_capacity_if_old_capacity_gt_zero(n)
+            })
+    }
+
+    fn new_capacity_if_old_capacity_gt_zero(n: NonZeroUsize) -> usize;
+
+    #[must_use]
+    fn new_capacity_if_old_capacity_eq_zero() -> usize {
+        1
+    }
+}
+
+pub struct Vec<T, G = Two>
+where
+    G: GrowthFactor,
+{
+    /// Contents of the Vec.
     /// Not every element is initialized, so accessing this directly is unsafe.
     items: Box<[MaybeUninit<T>]>,
 
-    /// Length of the vector.
+    /// Length of the Vec.
     /// Necessary because the contents of `items` are not all necessarily initialized.
     len: usize,
+
+    phantom: PhantomData<G>,
 }
 
-impl<T> Clone for Vec<T>
+impl<T, G> Default for Vec<T, G>
+where
+    G: GrowthFactor,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, G> Clone for Vec<T, G>
 where
     T: Copy,
+    G: GrowthFactor,
 {
     fn clone(&self) -> Self {
         Self {
             items: self.items.clone(),
             len: self.len,
+            phantom: self.phantom,
         }
     }
 }
 
-impl<T> Debug for Vec<T>
+impl<T, G> Debug for Vec<T, G>
 where
     T: Clone + Default + Debug,
+    G: GrowthFactor,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -38,23 +78,24 @@ where
     }
 }
 
-impl<T> Vec<T>
+impl<T, G> Vec<T, G>
 where
     T: Clone,
+    G: GrowthFactor,
 {
-    /// Returns the vector's items as a Box slice.
+    /// Returns the Vec's items as a Box slice.
     #[must_use]
     pub fn into_box_slice(self) -> Box<[T]> {
         self.as_slice().into()
     }
 
-    /// Reallocates the vector to a new Boxed array with a desired length (the new capacity of this vector)
+    /// Reallocates the Vec to a new Boxed array with a desired length (the new capacity of this Vec)
     fn realloc_to_desired_cap(&mut self, new_capacity: usize) {
         let mut empty_space: Box<[MaybeUninit<T>]> = repeat_with(MaybeUninit::uninit)
             .take(new_capacity)
             .collect();
 
-        // Iterator over the items in the vector.
+        // Iterator over the items in the Vec.
         // Move all of these into the new Box slice
         for (i, e) in self.as_slice().iter().cloned().enumerate() {
             empty_space[i] = MaybeUninit::new(e);
@@ -70,194 +111,226 @@ where
         }
     }
 
-    /// Grows the size of vector to fit more items.
+    /// Grows the size of Vec to fit more items.
     fn realloc(&mut self) {
-        self.realloc_to_desired_cap((self.cap() + 1).next_power_of_two());
+        self.realloc_to_desired_cap(G::new_capacity(self.cap()));
     }
 
     /// Calls `self.reallocate()` if `self.len() >= self.capacity()`.
-    /// Returns whether the vector reallocated.
+    /// Returns whether the Vec reallocated.
     /// # Guarantees
     /// The length will always be less than the capcity after this is called, so calling this twice in a row is useless.
     fn realloc_if_len_gte_cap(&mut self) -> bool {
         let len_gte_cap = self.len >= self.cap();
         if len_gte_cap {
             self.realloc();
-            debug_assert!(self.len >= self.cap());
         }
         len_gte_cap
     }
 
-    /// Shrinks the vector so that its capacity is the same as its length, if possible.
+    /// Shrinks the Vec so that its capacity is the same as its length, if possible.
     pub fn shrink_to_fit(&mut self) {
         self.realloc_to_desired_cap(self.len);
     }
 
-    /// Returns a mutable reference to the first uninitialized value in `self.items`.
-    /// Mostly for implementing methods like `self.push`.
-    /// - Reallocates if `self.length >= self.capacity`.    
-    fn first_uninit(&mut self) -> &mut T {
-        let s = self.uninint_slice();
-        let e = s
-            .get_mut(0)
-            .expect("Expected at least one uninitialized element");
-        unsafe { &mut *ptr::from_mut::<MaybeUninit<T>>(e).cast::<T>() }
-    }
-
-    /// Returns the uninitialized portion of the vector.
-    fn uninint_slice(&mut self) -> &mut [MaybeUninit<T>] {
+    /**
+    Returns the uninitialized portion of the Vec.
+    Reallocates if the length of the Vec is greater than its capacity.
+    */
+    unsafe fn uninint_slice(&mut self) -> &mut [MaybeUninit<T>] {
         self.realloc_if_len_gte_cap();
-        self.items
-            .get_mut(self.len..)
-            .expect("Uninitialized portion of the vector")
+        unsafe { self.items.get_unchecked_mut(self.len..) }
     }
 
-    /// Pushes an item onto the end of the vector
+    /**
+    Returns a mutable reference to the first uninitialized value in `self.items`.
+    Mostly for implementing methods like `self.push`.
+    Reallocates if the length of the Vec is greater than its capacity.
+    */
+    unsafe fn first_uninit(&mut self) -> &mut T {
+        unsafe {
+            let uninit = self.uninint_slice();
+            let e = uninit.get_unchecked_mut(0);
+            &mut *ptr::from_mut::<MaybeUninit<T>>(e).cast::<T>()
+        }
+    }
+
+    /**
+    Pushes an item onto the end of the Vec.
+    Reallocates if the length of the Vec is greater than its capacity.
+    */
     pub fn push(&mut self, x: T) {
-        *self.first_uninit() = x;
+        *unsafe { self.first_uninit() } = x;
         self.len += 1;
     }
 
-    /// Pushes all the items from an iterator into the vector
-    pub fn extend(&mut self, mut iter: impl Iterator<Item = T>) {
-        let min_items = iter.size_hint().0;
-        self.realloc_if_spare_cap_lt_n(min_items);
+    /**
+    Pushes all the items from an iterator into the Vec.
+    May reallocate to fit all the items produced by the iterator.
+    */
+    pub fn extend<I>(&mut self, iter: I)
+    where
+        I: ExactSizeIterator + Iterator<Item = T>,
+    {
+        let len = iter.len();
+        self.realloc_if_spare_cap_lt_n(len);
 
-        // Push `min_items` items from the iterator w/out reallocating.
-        // We know we have at least that much spare capacity.
-        // The iterator may have some spare items though, which we have to push the slow way.
-        unsafe { self.extend_unchecked(iter.by_ref().take(min_items)) };
-        self.extend_naive(iter);
+        /*
+        Push `min_items` items from the iterator w/out reallocating.
+        We know we have at least that much spare capacity.
+        The iterator may have some spare items though, which we have to push the slow way.
+        */
+        unsafe { self.extend_unchecked(iter) };
     }
 
-    /// Pushes all the items from an iterator into the vector.
-    /// # Notes
-    /// This should only be called when the number of remaining items in the iterator is unknown.
+    /**
+    Pushes all the items from an iterator into the Vec.
+    May reallocate to fit all the items produced by the iterator.
+    # Notes
+    - In general you should call `Vec::extend` if you can, since that doesn't push one item at a time.
+    - This should only be called when the number of remaining items in the iterator is unknown.
+    */
     pub fn extend_naive(&mut self, iter: impl Iterator<Item = T>) {
-        iter.for_each(|x| {
+        for x in iter {
             self.push(x);
-        });
+        }
     }
 }
 
-impl<T> Vec<T> {
-    /// Returns a slice of all the items in the vector.
+impl<T, G> Vec<T, G>
+where
+    G: GrowthFactor,
+{
+    /// Creates a new empty Vec
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            items: Box::new([]),
+            len: 0,
+            phantom: PhantomData,
+        }
+    }
+
+    /// Returns a slice of all the items in the Vec.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
         let slice = &self.items[..self.len];
         unsafe { &*(ptr::from_ref::<[MaybeUninit<T>]>(slice) as *const [T]) }
     }
-    /// Returns a slice of all the items in the vector.
+    /// Returns a slice of all the items in the Vec.
     #[must_use]
     pub fn as_slice_mut(&mut self) -> &mut [T] {
         let slice = &mut self.items[..self.len];
         unsafe { &mut *(ptr::from_mut::<[MaybeUninit<T>]>(slice) as *mut [T]) }
     }
 
-    /// Returns a reference to an item in the vector if its exists.
+    /// Returns a reference to an item in the Vec if its exists.
     #[must_use]
     pub fn get(&self, index: usize) -> Option<&T> {
         self.as_slice().get(index)
     }
 
-    /// Returns a mutable reference to an item in the vector if its exists.
+    /// Returns a mutable reference to an item in the Vec if its exists.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         // (index < self.len).then_some(unsafe { self.get_unchecked_mut(index) })
         self.as_slice_mut().get_mut(index)
     }
 
-    /// Returns a reference to an item in the vector without checking that it exists.
+    /// Returns a reference to an item in the Vec without checking that it exists.
     /// # Safety
     /// `n` must be < `self.capacity()`
     #[must_use]
-    pub const unsafe fn get_unchecked(&self, index: usize) -> &T {
-        let item: &MaybeUninit<T> = &self.items[index];
-        let ptr_mu_t: *const MaybeUninit<T> = ptr::from_ref(item);
-        let ptr_t: *const T = ptr_mu_t.cast();
-        &*ptr_t
+    pub unsafe fn get_unchecked(&self, index: usize) -> &T {
+        unsafe { self.as_slice().get_unchecked(index) }
     }
 
-    /// Returns a mutable reference to an item in the vector without checking that it exists.
+    /// Returns a mutable reference to an item in the Vec without checking that it exists.
     /// # Safety
     /// `n` must be < `self.capacity()`
     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
-        self.as_slice_mut().get_unchecked_mut(index)
+        unsafe { self.as_slice_mut().get_unchecked_mut(index) }
     }
 
-    /// Pushes an item into the vector without reallocating
+    /// Pushes an item into the Vec without reallocating
     /// # Safety
-    /// The spare capacity of the vector must be non-zero
+    /// The spare capacity of the Vec must be non-zero
     pub unsafe fn push_unchecked(&mut self, x: T) {
         self.len += 1;
-        *self.last_unchecked_mut() = x;
+        *unsafe { self.last_unchecked_mut() } = x;
     }
 
-    /// Pushes all the items from an iterator into the vector.
+    /// Pushes all the items from an iterator into the Vec.
     /// # Safety
     /// `self.spare_capacity()` must be <= the number of items in the iterator.
     pub unsafe fn extend_unchecked(&mut self, iter: impl Iterator<Item = T>) {
         for x in iter {
-            self.push_unchecked(x);
+            unsafe { self.push_unchecked(x) };
         }
     }
 
-    /// Returns a reference to the last element in the vector if there is one.
+    /// Returns a reference to the last element in the Vec if there is one.
     #[must_use]
     pub fn last(&self) -> Option<&T> {
         self.get(self.len.checked_sub(1)?)
     }
 
-    /// Returns a mutable reference to the last element in the vector if there is one.
+    /// Returns a mutable reference to the last element in the Vec if there is one.
     pub fn last_mut(&mut self) -> Option<&mut T> {
         self.get_mut(self.len.checked_sub(1)?)
     }
 
-    /// Returns a reference to the last element in the vector if there is one.
-    /// # Safety
-    /// - self.len must be known to be non-zero.
-    /// - the vector must be known to be non-empty
+    /**
+    Returns a reference to the last element in the Vec if there is one.
+    # Safety
+    - self.len must be known to be non-zero.
+    - the Vec must be known to be non-empty
+    */
     #[must_use]
-    pub const unsafe fn last_unchecked(&self) -> &T {
-        self.get_unchecked(self.len.unchecked_sub(1))
+    pub unsafe fn last_unchecked(&self) -> &T {
+        unsafe { self.get_unchecked(self.len.unchecked_sub(1)) }
     }
 
-    /// Returns a mutable reference to the last element in the vector if there is one.    
-    /// # Safety
-    /// The vector must be known to be non-empty
+    /**
+    Returns a mutable reference to the last element in the Vec if there is one.
+    # Safety
+    The Vec must be known to be non-empty
+    */
     pub unsafe fn last_unchecked_mut(&mut self) -> &mut T {
-        self.get_unchecked_mut(self.len.unchecked_sub(1))
+        unsafe { self.get_unchecked_mut(self.len.unchecked_sub(1)) }
     }
 
-    /// Removes and returns the last element in the vector
-    pub fn pop(&mut self) -> Option<&T> {
-        if self.is_empty() {
-            return None;
-        }
+    /// Removes and returns the last element in the Vec
+    pub fn pop(&mut self) -> Option<T> {
+        let old = std::mem::replace(
+            self.items.get_mut(self.len.checked_sub(1)?)?,
+            MaybeUninit::uninit(),
+        );
         self.len -= 1;
-        Some(unsafe { self.last_unchecked() })
+        // We can assume this is initialized because self.items[self.len-1] should already be initialized before this function is even called.
+        Some(unsafe { old.assume_init() })
     }
 
-    /// Capacity of the vector, or the number of items the vector can store without reallocating.
+    /// Capacity of the Vec, or the number of items the Vec can store without reallocating.
     #[must_use]
     pub const fn cap(&self) -> usize {
         self.items.len()
     }
 
-    /// Returns the number of additional items the vector can store without reallocating
+    /// Returns the number of additional items the Vec can store without reallocating
     #[must_use]
     pub const fn spare_capacity(&self) -> usize {
         self.cap() - self.len()
     }
 
-    /// Returns the number of items the vector is currently storing.
-
+    /// Returns the number of items the Vec is currently storing.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.len
     }
 
-    /// Whether the length of the vector is zero.    
+    /// Whether the length of the Vec is zero.
     #[must_use]
+    #[inline]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
