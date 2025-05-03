@@ -80,10 +80,30 @@ where
 
 impl<T, G> Vec<T, G>
 where
+    G: GrowthFactor,
+{
+    /// Removes all elements from the `Vec`
+    pub fn clear(&mut self) {
+        // I'm sure there's a better way to do this, but this works so I'm leaving it here.
+        while self.pop().is_some() {}
+    }
+
+    /// I have no idea if this will behave nicely, but could be faster than `Vec::clear`.
+    /// # Safety
+    /// I dunno use at your own risk.
+    pub fn clear_stupid(&mut self) {
+        for e in &mut self.items {
+            *e = MaybeUninit::uninit();
+        }
+    }
+}
+
+impl<T, G> Vec<T, G>
+where
     T: Clone,
     G: GrowthFactor,
 {
-    /// Returns the Vec's items as a Box slice.
+    /// Returns the `Vec`'s items as a Box slice.
     #[must_use]
     pub fn into_box_slice(self) -> Box<[T]> {
         self.as_slice().into()
