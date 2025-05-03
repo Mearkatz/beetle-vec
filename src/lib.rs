@@ -95,7 +95,8 @@ impl<'a, T, G> Vec<T, G>
 where
     G: GrowthFactor,
 {
-    fn iter(&'a self) -> std::slice::Iter<'a, T> {
+    /// Returns an iterator of references to the `Vec`'s elements.
+    pub fn iter(&'a self) -> std::slice::Iter<'a, T> {
         <&Self as IntoIterator>::into_iter(self)
     }
 }
