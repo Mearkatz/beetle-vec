@@ -78,6 +78,28 @@ where
     }
 }
 
+impl<'a, T, G> IntoIterator for &'a Vec<T, G>
+where
+    G: GrowthFactor,
+{
+    type Item = &'a T;
+
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter()
+    }
+}
+
+impl<'a, T, G> Vec<T, G>
+where
+    G: GrowthFactor,
+{
+    fn iter(&'a self) -> std::slice::Iter<'a, T> {
+        <&Self as IntoIterator>::into_iter(self)
+    }
+}
+
 impl<T, G> Vec<T, G>
 where
     G: GrowthFactor,
